@@ -12,6 +12,18 @@ import {
   normalizePath,
 } from 'obsidian';
 import { ChildProcess } from 'child_process';
+import {
+  isValidHttpUrl,
+  isValidMcpCommand,
+  PREVIEW_LENGTH_LONG,
+  PREVIEW_LENGTH_MED,
+  PREVIEW_LENGTH_SHORT,
+  IMPORT_PROGRESS_INTERVAL,
+  DASHBOARD_REFRESH_MS,
+  API_TIMEOUT_MS,
+  CONTEXT_ITEMS_LIMIT,
+  GRAPH_NODES_LIMIT,
+} from './helpers';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Types
@@ -97,30 +109,8 @@ const VIEW_TYPE_MEMORIUS_DASHBOARD = 'memorius-dashboard-view';
 const VIEW_TYPE_MEMORIUS_GRAPH = 'memorius-graph-view';
 const VIEW_TYPE_MEMORIUS_MCP = 'memorius-mcp-view';
 
-const PREVIEW_LENGTH_LONG = 300;
-const PREVIEW_LENGTH_MED = 200;
-const PREVIEW_LENGTH_SHORT = 150;
-const IMPORT_PROGRESS_INTERVAL = 50;
-const DASHBOARD_REFRESH_MS = 30000;
-const API_TIMEOUT_MS = 10000;
-const CONTEXT_ITEMS_LIMIT = 8;
-const GRAPH_NODES_LIMIT = 10;
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// Helpers
-// ═══════════════════════════════════════════════════════════════════════════════
-
 function getFileFolderName(file: TFile): string {
   return file.parent?.name || 'root';
-}
-
-function isValidHttpUrl(str: string): boolean {
-  try {
-    const url = new URL(str);
-    return url.protocol === 'http:' || url.protocol === 'https:';
-  } catch {
-    return false;
-  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -267,6 +257,12 @@ export default class MemoriusVaultPlugin extends Plugin {
     if (this.mcpProcess) {
       new Notice('MCP server already running');
       return true;
+    }
+
+    if (!isValidMcpCommand(this.settings.mcpServerPath)) {
+      new Notice('Invalid MCP command path');
+      console.error('Memorius: rejected MCP command:', this.settings.mcpServerPath);
+      return false;
     }
 
     try {
