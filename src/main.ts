@@ -11,6 +11,7 @@ import {
   TAbstractFile,
   normalizePath,
 } from 'obsidian';
+import { ChildProcess } from 'child_process';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Types
@@ -62,6 +63,30 @@ interface VaultHierarchy {
   vaults: { name: string; shelf_count: number; memory_count: number }[];
 }
 
+interface MemoriusStats {
+  memory_tracking?: {
+    total?: number;
+    by_vault?: { name: string; count: number }[];
+    by_shelf?: { shelf: string; count: number }[];
+  };
+  knowledge_graph?: {
+    nodes?: number;
+    edges?: number;
+  };
+}
+
+interface MemoriusStatus {
+  vaults?: number;
+  uptime?: number;
+}
+
+interface DiaryEntry {
+  title?: string;
+  session_id?: string;
+  summary?: string;
+  created_at?: string;
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // Constants
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -72,6 +97,32 @@ const VIEW_TYPE_MEMORIUS_DASHBOARD = 'memorius-dashboard-view';
 const VIEW_TYPE_MEMORIUS_GRAPH = 'memorius-graph-view';
 const VIEW_TYPE_MEMORIUS_MCP = 'memorius-mcp-view';
 
+const PREVIEW_LENGTH_LONG = 300;
+const PREVIEW_LENGTH_MED = 200;
+const PREVIEW_LENGTH_SHORT = 150;
+const IMPORT_PROGRESS_INTERVAL = 50;
+const DASHBOARD_REFRESH_MS = 30000;
+const API_TIMEOUT_MS = 10000;
+const CONTEXT_ITEMS_LIMIT = 8;
+const GRAPH_NODES_LIMIT = 10;
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Helpers
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function getFileFolderName(file: TFile): string {
+  return file.parent?.name || 'root';
+}
+
+function isValidHttpUrl(str: string): boolean {
+  try {
+    const url = new URL(str);
+    return url.protocol === 'http:' || url.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // Plugin
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -80,7 +131,8 @@ export default class MemoriusVaultPlugin extends Plugin {
   declare settings: MemoriusSettings;
   private statusBarItem: HTMLElement | null = null;
   private syncTimers: Map<string, NodeJS.Timeout> = new Map();
-  private mcpProcess: any = null;
+  private mcpProcess: ChildProcess | null = null;
+  private isImporting = false;
 
   async onload() {
     await this.loadSettings();
@@ -133,6 +185,9 @@ export default class MemoriusVaultPlugin extends Plugin {
       if (this.settings.syncOnStartup) {
         this.importEntireVault();
       }
+      if (this.settings.mcpAutoStart) {
+        this.startMcpServer();
+      }
     });
   }
 
@@ -144,7 +199,7 @@ export default class MemoriusVaultPlugin extends Plugin {
     }
     // Kill MCP process if running
     if (this.mcpProcess) {
-      try { this.mcpProcess.kill(); } catch { /* ignore */ }
+      try { this.mcpProcess.kill(); } catch (e) { console.error('Failed to kill MCP process:', e); }
       this.mcpProcess = null;
     }
   }
@@ -175,14 +230,14 @@ export default class MemoriusVaultPlugin extends Plugin {
       this.syncTimers.delete(key);
       try {
         const content = await this.app.vault.read(file);
-        const folder = file.parent?.name || 'root';
+        const folder = getFileFolderName(file);
         await this.storeMemory(content, folder, file.basename, {
           path: file.path,
           event,
           synced_from: 'obsidian-auto',
         });
       } catch (e) {
-        // Silently fail - might be disconnected
+        console.error('Memorius auto-sync error:', e);
       }
     }, this.settings.autoSyncDelay);
 
@@ -198,9 +253,9 @@ export default class MemoriusVaultPlugin extends Plugin {
     this.syncTimers.delete(key);
   }
 
-  private toggleAutoSync() {
+  private async toggleAutoSync() {
     this.settings.autoSync = !this.settings.autoSync;
-    this.saveSettings();
+    await this.saveSettings();
     new Notice(`Auto-sync ${this.settings.autoSync ? 'enabled' : 'disabled'}`);
   }
 
@@ -221,13 +276,15 @@ export default class MemoriusVaultPlugin extends Plugin {
         env: { ...process.env },
       });
 
-      this.mcpProcess.on('error', (err: any) => {
+      this.mcpProcess.on('error', (err: NodeJS.ErrnoException) => {
+        console.error('MCP server error:', err);
         new Notice(`MCP server error: ${err.message}`);
         this.mcpProcess = null;
       });
 
-      this.mcpProcess.on('exit', (code: number) => {
+      this.mcpProcess.on('exit', (code: number | null) => {
         if (code !== 0 && code !== null) {
+          console.warn(`MCP server exited with code ${code}`);
           new Notice(`MCP server exited with code ${code}`);
         }
         this.mcpProcess = null;
@@ -240,8 +297,10 @@ export default class MemoriusVaultPlugin extends Plugin {
 
       new Notice('MCP server started');
       return true;
-    } catch (e) {
-      new Notice(`Failed to start MCP: ${e.message}`);
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : String(e);
+      console.error('Failed to start MCP:', e);
+      new Notice(`Failed to start MCP: ${message}`);
       return false;
     }
   }
@@ -251,7 +310,7 @@ export default class MemoriusVaultPlugin extends Plugin {
       new Notice('MCP server not running');
       return;
     }
-    try { this.mcpProcess.kill(); } catch { /* ignore */ }
+    try { this.mcpProcess.kill(); } catch (e) { console.error('Failed to kill MCP:', e); }
     this.mcpProcess = null;
 
     this.app.workspace.getLeavesOfType(VIEW_TYPE_MEMORIUS_MCP).forEach(leaf => {
@@ -268,16 +327,26 @@ export default class MemoriusVaultPlugin extends Plugin {
   // API calls
   // ═══════════════════════════════════════════════════════════════════════════
 
-  private async apiRequest<T>(method: 'GET' | 'POST', path: string, body?: unknown): Promise<T> {
+  private async apiRequest<T>(method: 'GET' | 'POST', path: string, body?: unknown, timeoutMs: number = API_TIMEOUT_MS): Promise<T> {
     const url = `${this.settings.serverUrl}${path}`;
-    const options: RequestInit = { method, headers: { 'Content-Type': 'application/json' } };
-    if (body) options.body = JSON.stringify(body);
-    const res = await fetch(url, options);
-    if (!res.ok) {
-      const text = await res.text();
-      throw new Error(`Memorius API error (${res.status}): ${text}`);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const options: RequestInit = {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
+      };
+      if (body) options.body = JSON.stringify(body);
+      const res = await fetch(url, options);
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`Memorius API error (${res.status}): ${text}`);
+      }
+      return res.json() as Promise<T>;
+    } finally {
+      clearTimeout(timer);
     }
-    return res.json() as Promise<T>;
   }
 
   async search(query: string, limit?: number): Promise<SearchResult> {
@@ -299,12 +368,12 @@ export default class MemoriusVaultPlugin extends Plugin {
     });
   }
 
-  async getStatus(): Promise<Record<string, unknown>> {
-    return this.apiRequest<Record<string, unknown>>('GET', '/status');
+  async getStatus(): Promise<MemoriusStatus> {
+    return this.apiRequest<MemoriusStatus>('GET', '/status');
   }
 
-  async getStats(): Promise<Record<string, unknown>> {
-    return this.apiRequest<Record<string, unknown>>('GET', '/stats');
+  async getStats(): Promise<MemoriusStats> {
+    return this.apiRequest<MemoriusStats>('GET', '/stats');
   }
 
   async checkHealth(): Promise<boolean> {
@@ -314,37 +383,14 @@ export default class MemoriusVaultPlugin extends Plugin {
     } catch { return false; }
   }
 
-  async getHierarchy(vault?: string): Promise<VaultHierarchy> {
-    const v = vault || this.settings.defaultVault;
-    return this.apiRequest<VaultHierarchy>('GET', `/vault?vault=${encodeURIComponent(v)}`);
-  }
-
-  async getDiaries(limit: number = 10): Promise<any[]> {
+  async getDiaries(limit: number = 10): Promise<DiaryEntry[]> {
     const v = this.settings.defaultVault;
-    return this.apiRequest<any[]>('GET', `/diaries?vault=${encodeURIComponent(v)}&limit=${limit}`);
-  }
-
-  async mineText(text: string): Promise<{ stored: number; memory_ids: string[] }> {
-    return this.apiRequest<{ stored: number; memory_ids: string[] }>('POST', '/mine', {
-      text, vault: this.settings.defaultVault,
-    });
-  }
-
-  async factcheck(statement: string): Promise<Record<string, unknown>> {
-    return this.apiRequest<Record<string, unknown>>('POST', '/factcheck', {
-      statement, vault: this.settings.defaultVault,
-    });
+    return this.apiRequest<DiaryEntry[]>('GET', `/diaries?vault=${encodeURIComponent(v)}&limit=${limit}`);
   }
 
   async consolidate(dryRun: boolean = false): Promise<Record<string, unknown>> {
     return this.apiRequest<Record<string, unknown>>('POST', '/consolidate', {
       vault: this.settings.defaultVault, confirm: !dryRun, dry_run: dryRun,
-    });
-  }
-
-  async extractMemories(text: string): Promise<Record<string, unknown>> {
-    return this.apiRequest<Record<string, unknown>>('POST', '/extract', {
-      text, vault: this.settings.defaultVault,
     });
   }
 
@@ -380,28 +426,43 @@ export default class MemoriusVaultPlugin extends Plugin {
     const activeFile = this.app.workspace.getActiveFile();
     if (!activeFile) { new Notice('No active note'); return; }
     const content = await this.app.vault.read(activeFile);
-    const folder = activeFile.parent?.name || 'root';
+    const folder = getFileFolderName(activeFile);
     try {
       await this.storeMemory(content, folder, activeFile.basename, { path: activeFile.path, imported_from: 'obsidian' });
       new Notice(`Imported "${activeFile.basename}"`);
-    } catch (e) { new Notice(`Failed: ${e.message}`); }
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      new Notice(`Failed: ${message}`);
+    }
   }
 
   async importEntireVault() {
-    const files = this.app.vault.getMarkdownFiles();
-    new Notice(`Importing ${files.length} notes...`);
-    let count = 0, failed = 0;
-    for (const file of files) {
-      try {
-        const content = await this.app.vault.read(file);
-        const folder = file.parent?.name || 'root';
-        await this.storeMemory(content, folder, file.basename, { path: file.path, imported_from: 'obsidian' });
-        count++;
-      } catch { failed++; }
-      if (count % 50 === 0) new Notice(`Imported ${count}/${files.length}...`);
+    if (this.isImporting) {
+      new Notice('Import already in progress');
+      return;
     }
-    new Notice(`Complete: ${count} imported, ${failed} failed`);
-    this.updateStatusBar();
+    this.isImporting = true;
+    try {
+      const files = this.app.vault.getMarkdownFiles();
+      new Notice(`Importing ${files.length} notes...`);
+      let count = 0, failed = 0;
+      for (const file of files) {
+        try {
+          const content = await this.app.vault.read(file);
+          const folder = getFileFolderName(file);
+          await this.storeMemory(content, folder, file.basename, { path: file.path, imported_from: 'obsidian' });
+          count++;
+        } catch (e) {
+          console.error('Memorius import error:', file.path, e);
+          failed++;
+        }
+        if (count % IMPORT_PROGRESS_INTERVAL === 0) console.debug(`Memorius: imported ${count}/${files.length}`);
+      }
+      new Notice(`Complete: ${count} imported, ${failed} failed`);
+    } finally {
+      this.isImporting = false;
+      this.updateStatusBar();
+    }
   }
 
   async exportContextToNote() {
@@ -420,20 +481,26 @@ export default class MemoriusVaultPlugin extends Plugin {
         await this.app.vault.create(path, context);
         new Notice(`Created ${fileName}`);
       }
-    } catch (e) { new Notice(`Failed: ${e.message}`); }
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      new Notice(`Failed: ${message}`);
+    }
   }
 
   async runConsolidate() {
     try {
       const result = await this.consolidate(false);
       new Notice(`Consolidated: ${result.memories_merged as number} merged, ${result.memories_archived as number} archived`);
-    } catch (e) { new Notice(`Failed: ${e.message}`); }
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      new Notice(`Failed: ${message}`);
+    }
   }
 
   async updateStatusBar() {
     if (!this.statusBarItem) return;
     try {
-      const stats = await this.getStats() as any;
+      const stats = await this.getStats();
       const total = stats?.memory_tracking?.total || 0;
       this.statusBarItem.setText(`Memorius: ${total} memories`);
     } catch {
@@ -460,12 +527,12 @@ function buildMemoryCard(container: HTMLElement, mem: MemoriusMemory, app: App, 
 
   const preview = card.createEl('div', { cls: 'memorius-result-preview' });
   const c = mem.content || '';
-  preview.setText(c.length > 300 ? c.substring(0, 300) + '...' : c);
+  preview.setText(c.length > PREVIEW_LENGTH_LONG ? c.substring(0, PREVIEW_LENGTH_LONG) + '...' : c);
 
   const actions = card.createEl('div', { cls: 'memorius-result-actions' });
 
   // Open note button
-  const notePath = mem.metadata?.path as string | undefined;
+  const notePath = typeof mem.metadata?.path === 'string' ? mem.metadata.path : undefined;
   if (notePath) {
     const openBtn = actions.createEl('button', { text: 'Open note', cls: 'memorius-action-btn' });
     openBtn.addEventListener('click', () => app.workspace.openLinkText(notePath, '', false));
@@ -529,10 +596,11 @@ class SearchView extends ItemView {
         return;
       }
       for (const mem of results.results) buildMemoryCard(this.resultsContainer, mem, this.app);
-    } catch (e: any) {
+    } catch (e: unknown) {
       this.resultsContainer.empty();
       this.statusEl.className = 'memorius-status memorius-status-err';
-      this.statusEl.setText(`Error: ${e.message}`);
+      const message = e instanceof Error ? e.message : String(e);
+      this.statusEl.setText(`Error: ${message}`);
     }
   }
 }
@@ -581,16 +649,21 @@ class ContextView extends ItemView {
 
       const injectBtn = hdr.createEl('button', { text: 'Inject into note', cls: 'memorius-action-btn' });
       injectBtn.addEventListener('click', async () => {
-        const ctx = await this.plugin.getContext(file.basename);
-        const editor = this.app.workspace.activeEditor?.editor;
-        if (editor) editor.replaceSelection(`\n\n<!-- context -->\n${ctx}\n<!-- /context -->\n`);
-        new Notice('Context injected');
+        try {
+          const ctx = await this.plugin.getContext(file.basename);
+          const editor = this.app.workspace.activeEditor?.editor;
+          if (editor) editor.replaceSelection(`\n\n<!-- context -->\n${ctx}\n<!-- /context -->\n`);
+          new Notice('Context injected');
+        } catch (e: unknown) {
+          const message = e instanceof Error ? e.message : String(e);
+          new Notice(`Failed to inject context: ${message}`);
+        }
       });
 
-      for (const mem of results.results.slice(0, 8)) {
+      for (const mem of results.results.slice(0, CONTEXT_ITEMS_LIMIT)) {
         const item = this.ctxContainer.createEl('div', { cls: 'memorius-context-item' });
         item.createEl('div', { cls: 'memorius-context-item-path', text: `${mem.shelf}/${mem.folder}/${mem.note}` });
-        item.createEl('div', { cls: 'memorius-context-item-preview', text: (mem.content || '').substring(0, 150) });
+        item.createEl('div', { cls: 'memorius-context-item-preview', text: (mem.content || '').substring(0, PREVIEW_LENGTH_SHORT) });
       }
     } catch {
       this.ctxContainer.createEl('p', { cls: 'memorius-status-err', text: 'Failed to load context.' });
@@ -604,7 +677,7 @@ class ContextView extends ItemView {
 
 class DashboardView extends ItemView {
   plugin: MemoriusVaultPlugin;
-  private refreshTimer: any = null;
+  private refreshTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(leaf: WorkspaceLeaf, plugin: MemoriusVaultPlugin) { super(leaf); this.plugin = plugin; }
   getViewType(): string { return VIEW_TYPE_MEMORIUS_DASHBOARD; }
@@ -615,8 +688,7 @@ class DashboardView extends ItemView {
     const c = (this.containerEl.children[1] as HTMLElement);
     c.empty(); c.addClass('memorius-container');
     this.renderDashboard(c);
-    // Auto-refresh every 30s
-    this.refreshTimer = setInterval(() => this.renderDashboard(c), 30000);
+    this.refreshTimer = setInterval(() => this.renderDashboard(c), DASHBOARD_REFRESH_MS);
   }
 
   async renderDashboard(container: HTMLElement) {
@@ -628,29 +700,26 @@ class DashboardView extends ItemView {
 
     try {
       const [stats, status, diaries] = await Promise.all([
-        this.plugin.getStats(),
-        this.plugin.getStatus(),
-        this.plugin.getDiaries(5),
+        this.plugin.getStats().catch(() => null),
+        this.plugin.getStatus().catch(() => null),
+        this.plugin.getDiaries(5).catch(() => []),
       ]);
 
       body.empty();
 
-      const s = stats as any;
-      const st = status as any;
-
       // Stats cards row
       const cardsRow = body.createEl('div', { cls: 'memorius-dashboard-cards' });
 
-      this.createStatCard(cardsRow, '🧠', 'Total Memories', s?.memory_tracking?.total ?? '—');
-      this.createStatCard(cardsRow, '📁', 'Vaults', s?.memory_tracking?.by_vault?.length ?? st?.vaults ?? '—');
-      this.createStatCard(cardsRow, '🔗', 'Graph Nodes', s?.knowledge_graph?.nodes ?? '—');
-      this.createStatCard(cardsRow, '⚡', 'Edges', s?.knowledge_graph?.edges ?? '—');
+      this.createStatCard(cardsRow, '🧠', 'Total Memories', stats?.memory_tracking?.total ?? '—');
+      this.createStatCard(cardsRow, '📁', 'Vaults', stats?.memory_tracking?.by_vault?.length ?? status?.vaults ?? '—');
+      this.createStatCard(cardsRow, '🔗', 'Graph Nodes', stats?.knowledge_graph?.nodes ?? '—');
+      this.createStatCard(cardsRow, '⚡', 'Edges', stats?.knowledge_graph?.edges ?? '—');
 
       // Memory distribution
-      if (s?.memory_tracking?.by_shelf) {
+      if (stats?.memory_tracking?.by_shelf) {
         body.createEl('h4', { text: 'Distribution by Shelf' });
         const distList = body.createEl('div', { cls: 'memorius-dist-list' });
-        for (const shelf of s.memory_tracking.by_shelf) {
+        for (const shelf of stats.memory_tracking.by_shelf) {
           const row = distList.createEl('div', { cls: 'memorius-dist-row' });
           row.createEl('span', { text: shelf.shelf || 'default' });
           row.createEl('span', { text: String(shelf.count) });
@@ -674,17 +743,26 @@ class DashboardView extends ItemView {
       const actions = body.createEl('div', { cls: 'memorius-dashboard-actions' });
 
       this.createActionBtn(actions, '🔄 Consolidate', async () => {
-        const result = await this.plugin.consolidate(false);
-        new Notice(`Merged: ${result.memories_merged}, Archived: ${result.memories_archived}`);
+        try {
+          const result = await this.plugin.consolidate(false);
+          new Notice(`Merged: ${result.memories_merged}, Archived: ${result.memories_archived}`);
+        } catch (e: unknown) {
+          const message = e instanceof Error ? e.message : String(e);
+          new Notice(`Consolidate failed: ${message}`);
+        }
         this.renderDashboard(container);
       });
 
-      this.createActionBtn(actions, '📥 Import Vault', async () => { await this.plugin.importEntireVault(); this.renderDashboard(container); });
+      this.createActionBtn(actions, '📥 Import Vault', async () => {
+        await this.plugin.importEntireVault();
+        this.renderDashboard(container);
+      });
       this.createActionBtn(actions, '🔍 Open Search', () => this.plugin.activateView(VIEW_TYPE_MEMORIUS_SEARCH));
 
-    } catch (e: any) {
+    } catch (e: unknown) {
       body.empty();
-      body.createEl('p', { cls: 'memorius-status-err', text: `Error: ${e.message}. Is the server running?` });
+      const message = e instanceof Error ? e.message : String(e);
+      body.createEl('p', { cls: 'memorius-status-err', text: `Error: ${message}. Is the server running?` });
     }
   }
 
@@ -695,7 +773,7 @@ class DashboardView extends ItemView {
     card.createEl('div', { cls: 'memorius-stat-label', text: label });
   }
 
-  private createActionBtn(container: HTMLElement, label: string, onClick: () => any) {
+  private createActionBtn(container: HTMLElement, label: string, onClick: () => void) {
     const btn = container.createEl('button', { cls: 'memorius-action-btn memorius-dash-btn', text: label });
     btn.addEventListener('click', onClick);
   }
@@ -724,7 +802,7 @@ class GraphView extends ItemView {
 
     c.createEl('div', { cls: 'memorius-header' }).createEl('h3', { text: '🔗 Semantic Graph' });
 
-    const desc = c.createEl('p', { cls: 'memorius-hint', text: 'Shows how the current note relates to other memories.' });
+    c.createEl('p', { cls: 'memorius-hint', text: 'Shows how the current note relates to other memories.' });
     this.graphContainer = c.createEl('div', { cls: 'memorius-graph-area' });
 
     this.registerEvent(this.app.workspace.on('active-leaf-change', () => this.renderGraph()));
@@ -763,7 +841,7 @@ class GraphView extends ItemView {
       centerNode.setText(file.basename);
 
       // Connected nodes with varying relevance
-      for (const mem of results.results.slice(0, 10)) {
+      for (const mem of results.results.slice(0, GRAPH_NODES_LIMIT)) {
         const edge = viz.createEl('div', { cls: 'memorius-graph-edge' });
         const node = edge.createEl('div', {
           cls: `memorius-graph-node memorius-graph-node-related`,
@@ -775,20 +853,21 @@ class GraphView extends ItemView {
         node.createEl('div', { cls: 'memorius-graph-node-meta', text: `${mem.folder} · ${Math.round((mem.score || 0) * 100)}%` });
 
         // Click to open
-        const notePath = mem.metadata?.path as string | undefined;
+        const notePath = typeof mem.metadata?.path === 'string' ? mem.metadata.path : undefined;
         if (notePath) {
           node.addEventListener('click', () => this.app.workspace.openLinkText(notePath, '', false));
         }
 
         // Show preview on hover
-        const preview = node.createEl('div', { cls: 'memorius-graph-node-preview', text: (mem.content || '').substring(0, 200) });
+        const preview = node.createEl('div', { cls: 'memorius-graph-node-preview', text: (mem.content || '').substring(0, PREVIEW_LENGTH_MED) });
         preview.style.display = 'none';
         node.addEventListener('mouseenter', () => preview.style.display = 'block');
         node.addEventListener('mouseleave', () => preview.style.display = 'none');
       }
 
-    } catch (e: any) {
-      this.graphContainer.createEl('p', { cls: 'memorius-status-err', text: `Error: ${e.message}` });
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : String(e);
+      this.graphContainer.createEl('p', { cls: 'memorius-status-err', text: `Error: ${message}` });
     }
   }
 }
@@ -799,7 +878,6 @@ class GraphView extends ItemView {
 
 class McpView extends ItemView {
   plugin: MemoriusVaultPlugin;
-  private outputContainer!: HTMLElement;
   private statusEl!: HTMLElement;
 
   constructor(leaf: WorkspaceLeaf, plugin: MemoriusVaultPlugin) { super(leaf); this.plugin = plugin; }
@@ -854,8 +932,9 @@ class McpView extends ItemView {
       try {
         const result = await this.plugin.search('test');
         new Notice(`Search works! Found ${result.count} results`);
-      } catch (e: any) {
-        new Notice(`Search failed: ${e.message}`);
+      } catch (e: unknown) {
+        const message = e instanceof Error ? e.message : String(e);
+        new Notice(`Search failed: ${message}`);
       }
     });
 
@@ -864,8 +943,9 @@ class McpView extends ItemView {
       try {
         await this.plugin.storeMemory('MCP console test entry', 'mcp', 'test-entry', { source: 'mcp-console' });
         new Notice('Test memory stored successfully');
-      } catch (e: any) {
-        new Notice(`Store failed: ${e.message}`);
+      } catch (e: unknown) {
+        const message = e instanceof Error ? e.message : String(e);
+        new Notice(`Store failed: ${message}`);
       }
     });
   }
@@ -924,8 +1004,9 @@ class ContextInjectModal extends Modal {
           const editor = this.app.workspace.activeEditor?.editor;
           if (editor) { editor.replaceSelection(`\n\n${context}\n`); new Notice('Injected'); this.close(); }
         });
-      } catch (e: any) {
-        this.resultEl.createEl('p', { cls: 'memorius-status-err', text: `Error: ${e.message}` });
+      } catch (e: unknown) {
+        const message = e instanceof Error ? e.message : String(e);
+        this.resultEl.createEl('p', { cls: 'memorius-status-err', text: `Error: ${message}` });
       } finally {
         fetchBtn.disabled = false; fetchBtn.setText('Fetch Related Memories');
       }
@@ -949,37 +1030,119 @@ class MemoriusSettingTab extends PluginSettingTab {
     containerEl.createEl('h2', { text: 'Memorius Vault Settings' });
     containerEl.createEl('p', { cls: 'memorius-settings-desc', text: 'Connect to the Memorius REST API server to enable semantic search, auto-sync, MCP, and memory features.' });
 
-    // Connection
+    this.renderConnectionSection(containerEl);
+    this.renderSyncSection(containerEl);
+    this.renderMcpSection(containerEl);
+    this.renderDisplaySection(containerEl);
+    this.renderActionsSection(containerEl);
+    this.renderGuideSection(containerEl);
+  }
+
+  private renderConnectionSection(containerEl: HTMLElement) {
     containerEl.createEl('h3', { text: '🔌 Connection' });
-    new Setting(containerEl).setName('Server URL').setDesc('REST API address').addText(t => t.setPlaceholder('http://127.0.0.1:8912').setValue(this.plugin.settings.serverUrl).onChange(async v => { this.plugin.settings.serverUrl = v; await this.plugin.saveSettings(); }));
-    new Setting(containerEl).setName('Default vault').setDesc('Memorius vault name').addText(t => t.setPlaceholder('main').setValue(this.plugin.settings.defaultVault).onChange(async v => { this.plugin.settings.defaultVault = v; await this.plugin.saveSettings(); }));
-    new Setting(containerEl).setName('Max results').setDesc('').addSlider(s => s.setLimits(5, 50, 5).setValue(this.plugin.settings.maxSearchResults).setDynamicTooltip().onChange(async v => { this.plugin.settings.maxSearchResults = v; await this.plugin.saveSettings(); }));
-    new Setting(containerEl).setName('Test Connection').addButton(b => b.setButtonText('Test').onClick(async () => { const ok = await this.plugin.checkHealth(); new Notice(ok ? '✅ Connected' : '❌ Cannot reach'); }));
+    new Setting(containerEl)
+      .setName('Server URL')
+      .setDesc('REST API address')
+      .addText(t => t
+        .setPlaceholder('http://127.0.0.1:8912')
+        .setValue(this.plugin.settings.serverUrl)
+        .onChange(async v => {
+          if (v && !isValidHttpUrl(v)) return;
+          this.plugin.settings.serverUrl = v;
+          await this.plugin.saveSettings();
+        }));
+    new Setting(containerEl)
+      .setName('Default vault')
+      .setDesc('Memorius vault name')
+      .addText(t => t
+        .setPlaceholder('main')
+        .setValue(this.plugin.settings.defaultVault)
+        .onChange(async v => { this.plugin.settings.defaultVault = v; await this.plugin.saveSettings(); }));
+    new Setting(containerEl)
+      .setName('Max results')
+      .setDesc('')
+      .addSlider(s => s
+        .setLimits(5, 50, 5)
+        .setValue(this.plugin.settings.maxSearchResults)
+        .setDynamicTooltip()
+        .onChange(async v => { this.plugin.settings.maxSearchResults = v; await this.plugin.saveSettings(); }));
+    new Setting(containerEl)
+      .setName('Test Connection')
+      .addButton(b => b
+        .setButtonText('Test')
+        .onClick(async () => { const ok = await this.plugin.checkHealth(); new Notice(ok ? '✅ Connected' : '❌ Cannot reach'); }));
+  }
 
-    // Sync
+  private renderSyncSection(containerEl: HTMLElement) {
     containerEl.createEl('h3', { text: '🔄 Auto-Sync' });
-    new Setting(containerEl).setName('Auto-sync').setDesc('Import notes to Memorius on create/modify').addToggle(t => t.setValue(this.plugin.settings.autoSync).onChange(async v => { this.plugin.settings.autoSync = v; await this.plugin.saveSettings(); }));
-    new Setting(containerEl).setName('Sync delay (ms)').setDesc('Debounce delay for sync').addSlider(s => s.setLimits(500, 5000, 500).setValue(this.plugin.settings.autoSyncDelay).setDynamicTooltip().onChange(async v => { this.plugin.settings.autoSyncDelay = v; await this.plugin.saveSettings(); }));
-    new Setting(containerEl).setName('Sync on startup').setDesc('Import entire vault on plugin load').addToggle(t => t.setValue(this.plugin.settings.syncOnStartup).onChange(async v => { this.plugin.settings.syncOnStartup = v; await this.plugin.saveSettings(); }));
-    new Setting(containerEl).addButton(b => b.setButtonText('Import All Notes Now').onClick(() => this.plugin.importEntireVault()));
+    new Setting(containerEl)
+      .setName('Auto-sync')
+      .setDesc('Import notes to Memorius on create/modify')
+      .addToggle(t => t
+        .setValue(this.plugin.settings.autoSync)
+        .onChange(async v => { this.plugin.settings.autoSync = v; await this.plugin.saveSettings(); }));
+    new Setting(containerEl)
+      .setName('Sync delay (ms)')
+      .setDesc('Debounce delay for sync')
+      .addSlider(s => s
+        .setLimits(500, 5000, 500)
+        .setValue(this.plugin.settings.autoSyncDelay)
+        .setDynamicTooltip()
+        .onChange(async v => { this.plugin.settings.autoSyncDelay = v; await this.plugin.saveSettings(); }));
+    new Setting(containerEl)
+      .setName('Sync on startup')
+      .setDesc('Import entire vault on plugin load')
+      .addToggle(t => t
+        .setValue(this.plugin.settings.syncOnStartup)
+        .onChange(async v => { this.plugin.settings.syncOnStartup = v; await this.plugin.saveSettings(); }));
+    new Setting(containerEl)
+      .addButton(b => b
+        .setButtonText('Import All Notes Now')
+        .onClick(() => this.plugin.importEntireVault()));
+  }
 
-    // MCP
+  private renderMcpSection(containerEl: HTMLElement) {
     containerEl.createEl('h3', { text: '🖥️ MCP Server' });
-    new Setting(containerEl).setName('MCP command').setDesc('Path/command to start Memorius MCP').addText(t => t.setPlaceholder('memorius').setValue(this.plugin.settings.mcpServerPath).onChange(async v => { this.plugin.settings.mcpServerPath = v; await this.plugin.saveSettings(); }));
-    new Setting(containerEl).setName('Start MCP on load').addToggle(t => t.setValue(this.plugin.settings.mcpAutoStart).onChange(async v => { this.plugin.settings.mcpAutoStart = v; await this.plugin.saveSettings(); }));
-    new Setting(containerEl).addButton(b => b.setButtonText('▶️ Start MCP').onClick(() => this.plugin.startMcpServer()));
-    new Setting(containerEl).addButton(b => b.setButtonText('⏹️ Stop MCP').onClick(() => this.plugin.stopMcpServer()));
+    new Setting(containerEl)
+      .setName('MCP command')
+      .setDesc('Path/command to start Memorius MCP')
+      .addText(t => t
+        .setPlaceholder('memorius')
+        .setValue(this.plugin.settings.mcpServerPath)
+        .onChange(async v => { this.plugin.settings.mcpServerPath = v; await this.plugin.saveSettings(); }));
+    new Setting(containerEl)
+      .setName('Start MCP on load')
+      .addToggle(t => t
+        .setValue(this.plugin.settings.mcpAutoStart)
+        .onChange(async v => { this.plugin.settings.mcpAutoStart = v; await this.plugin.saveSettings(); }));
+    new Setting(containerEl)
+      .addButton(b => b
+        .setButtonText('▶️ Start MCP')
+        .onClick(() => this.plugin.startMcpServer()));
+    new Setting(containerEl)
+      .addButton(b => b
+        .setButtonText('⏹️ Stop MCP')
+        .onClick(() => this.plugin.stopMcpServer()));
+  }
 
-    // Status
+  private renderDisplaySection(containerEl: HTMLElement) {
     containerEl.createEl('h3', { text: '📊 Display' });
-    new Setting(containerEl).setName('Show status bar').addToggle(t => t.setValue(this.plugin.settings.showStatusBar).onChange(async v => { this.plugin.settings.showStatusBar = v; await this.plugin.saveSettings(); }));
+    new Setting(containerEl)
+      .setName('Show status bar')
+      .addToggle(t => t
+        .setValue(this.plugin.settings.showStatusBar)
+        .onChange(async v => { this.plugin.settings.showStatusBar = v; await this.plugin.saveSettings(); }));
+  }
 
-    // Actions
+  private renderActionsSection(containerEl: HTMLElement) {
     containerEl.createEl('h3', { text: '⚡ Actions' });
-    new Setting(containerEl).addButton(b => b.setButtonText('🔄 Consolidate Memories').onClick(() => this.plugin.runConsolidate()));
-    new Setting(containerEl).addButton(b => b.setButtonText('📥 Import All Notes').onClick(() => this.plugin.importEntireVault()));
+    new Setting(containerEl)
+      .addButton(b => b
+        .setButtonText('🔄 Consolidate Memories')
+        .onClick(() => this.plugin.runConsolidate()));
+  }
 
-    // Guide
+  private renderGuideSection(containerEl: HTMLElement) {
     containerEl.createEl('h3', { text: '📖 Quick Start' });
     const guide = containerEl.createEl('div', { cls: 'memorius-guide' });
     guide.createEl('p', { text: '1. Start the Memorius server: memorius serve' });
