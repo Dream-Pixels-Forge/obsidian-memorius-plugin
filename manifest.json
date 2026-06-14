@@ -1,0 +1,11 @@
+{
+  "id": "memorius-vault",
+  "name": "Memorius Vault",
+  "version": "0.1.0",
+  "minAppVersion": "1.5.0",
+  "description": "Vector memory vault for Obsidian — semantic search, context injection, and cross-vault consolidation powered by Memorius.",
+  "author": "Dream Pixels Forge",
+  "authorUrl": "https://github.com/Dream-Pixels-Forge",
+  "fundingUrl": "",
+  "isDesktopOnly": true
+}
