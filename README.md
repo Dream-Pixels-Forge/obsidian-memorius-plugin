@@ -1,5 +1,13 @@
 # Memorius Vault — Obsidian Plugin
 
+<p>
+  <a href="https://github.com/Dream-Pixels-Forge/obsidian-memorius-plugin/releases"><img src="https://img.shields.io/github/v/release/Dream-Pixels-Forge/obsidian-memorius-plugin?logo=github" alt="Release"></a>
+  <a href="https://obsidian.md"><img src="https://img.shields.io/badge/Obsidian-1.5.0+-purple?logo=obsidian" alt="Obsidian"></a>
+  <img src="https://img.shields.io/github/languages/top/Dream-Pixels-Forge/obsidian-memorius-plugin" alt="Language">
+  <img src="https://img.shields.io/github/license/Dream-Pixels-Forge/obsidian-memorius-plugin" alt="License">
+  <img src="https://img.shields.io/github/last-commit/Dream-Pixels-Forge/obsidian-memorius-plugin?logo=github" alt="Last commit">
+</p>
+
 Connect your Obsidian vault to [Memorius](https://github.com/Dream-Pixels-Forge/memorius), the universal memory vault for AI agents. Semantic search, auto-sync, context injection, and MCP server management — all from within Obsidian.
 
 ## Features
