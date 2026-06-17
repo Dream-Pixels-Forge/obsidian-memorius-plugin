@@ -120,7 +120,7 @@ function getFileFolderName(file: TFile): string {
 export default class MemoriusVaultPlugin extends Plugin {
   declare settings: MemoriusSettings;
   private statusBarItem: HTMLElement | null = null;
-  private syncTimers: Map<string, number> = new Map();
+  private syncTimers: Map<string, ReturnType<typeof setInterval>> = new Map();
   private mcpProcess: ChildProcessLike | null = null;
   private isImporting = false;
 
@@ -681,7 +681,7 @@ class ContextView extends ItemView {
 
 class DashboardView extends ItemView {
   plugin: MemoriusVaultPlugin;
-  private refreshTimer: number | null = null;
+  private refreshTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(leaf: WorkspaceLeaf, plugin: MemoriusVaultPlugin) { super(leaf); this.plugin = plugin; }
   getViewType(): string { return VIEW_TYPE_MEMORIUS_DASHBOARD; }
@@ -1124,26 +1124,23 @@ class MemoriusSettingTab extends PluginSettingTab {
 
   private renderMcpSection(containerEl: HTMLElement) {
     containerEl.createEl('h3', { text: '🖥️ MCP Server' });
+    containerEl.createEl('p', { cls: 'memorius-hint', text: 'MCP process control is unavailable inside Obsidian. Run the server from a terminal instead:' });
+    containerEl.createEl('code', { text: 'memorius serve' });
+    containerEl.createEl('p', { cls: 'memorius-hint', text: 'Use the MCP Console view to test REST connectivity, or manage the server externally.' });
     new Setting(containerEl)
       .setName('MCP command')
-      .setDesc('Path/command to start Memorius MCP')
+      .setDesc('Used only when running outside the Obsidian sandbox')
       .addText(t => t
         .setPlaceholder('memorius')
         .setValue(this.plugin.settings.mcpServerPath)
         .onChange(async v => { this.plugin.settings.mcpServerPath = v; await this.plugin.saveSettings(); }));
     new Setting(containerEl)
       .setName('Start MCP on load')
+      .setDesc('Disabled for Obsidian builds without Node APIs')
       .addToggle(t => t
-        .setValue(this.plugin.settings.mcpAutoStart)
-        .onChange(async v => { this.plugin.settings.mcpAutoStart = v; await this.plugin.saveSettings(); }));
-    new Setting(containerEl)
-      .addButton(b => b
-        .setButtonText('▶️ Start MCP')
-        .onClick(() => this.plugin.startMcpServer()));
-    new Setting(containerEl)
-      .addButton(b => b
-        .setButtonText('⏹️ Stop MCP')
-        .onClick(() => this.plugin.stopMcpServer()));
+        .setDisabled(true)
+        .setValue(false)
+        .onChange(async () => {}));
   }
 
   private renderDisplaySection(containerEl: HTMLElement) {

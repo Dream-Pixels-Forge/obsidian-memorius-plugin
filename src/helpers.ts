@@ -33,6 +33,6 @@ export const CONTEXT_ITEMS_LIMIT = 8;
 export const GRAPH_NODES_LIMIT = 10;
 
 export type ChildProcessLike = {
-  kill: (signal?: string) => void;
+  kill: (signal?: unknown) => void;
   on: (event: string, handler: (...args: any[]) => void) => void;
 };
