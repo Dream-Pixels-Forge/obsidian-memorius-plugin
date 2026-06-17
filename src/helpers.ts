@@ -31,3 +31,8 @@ export const DASHBOARD_REFRESH_MS = 30000;
 export const API_TIMEOUT_MS = 10000;
 export const CONTEXT_ITEMS_LIMIT = 8;
 export const GRAPH_NODES_LIMIT = 10;
+
+export type ChildProcessLike = {
+  kill: (signal?: string) => void;
+  on: (event: string, handler: (...args: any[]) => void) => void;
+};

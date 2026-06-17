@@ -11,7 +11,7 @@ import {
   TAbstractFile,
   normalizePath,
 } from 'obsidian';
-import { ChildProcess } from 'child_process';
+import type { ChildProcessLike } from './helpers';
 import {
   isValidHttpUrl,
   isValidMcpCommand,
@@ -121,7 +121,7 @@ export default class MemoriusVaultPlugin extends Plugin {
   declare settings: MemoriusSettings;
   private statusBarItem: HTMLElement | null = null;
   private syncTimers: Map<string, NodeJS.Timeout> = new Map();
-  private mcpProcess: ChildProcess | null = null;
+  private mcpProcess: ChildProcessLike | null = null;
   private isImporting = false;
 
   async onload() {
@@ -254,6 +254,14 @@ export default class MemoriusVaultPlugin extends Plugin {
   // ═══════════════════════════════════════════════════════════════════════════
 
   async startMcpServer(): Promise<boolean> {
+    try {
+      await import('child_process');
+    } catch {
+      new Notice('MCP control not supported in this Obsidian build');
+      console.warn('Memorius: child_process module unavailable in this Obsidian runtime');
+      return false;
+    }
+
     if (this.mcpProcess) {
       new Notice('MCP server already running');
       return true;
@@ -890,6 +898,15 @@ class McpView extends ItemView {
     this.statusEl = c.createEl('div', { cls: 'memorius-status', text: '' });
     this.updateServerStatus();
 
+    const isBrowser = typeof window !== 'undefined' && (typeof process === 'undefined' || !process.versions?.node);
+
+    if (isBrowser) {
+      const unsupported = c.createEl('p', { cls: 'memorius-hint', text: 'MCP process management is unavailable in this Obsidian build.' });
+      const detail = c.createEl('p', { cls: 'memorius-hint', text: 'Run the server manually from a terminal:' });
+      detail.createEl('code', { text: 'memorius serve' });
+      return;
+    }
+
     // Action buttons
     const actions = c.createEl('div', { cls: 'memorius-mcp-actions' });
 
@@ -947,7 +964,13 @@ class McpView extends ItemView {
   }
 
   updateServerStatus() {
+    const isBrowser = typeof window !== 'undefined' && (typeof process === 'undefined' || !process.versions?.node);
     const running = this.plugin.isMcpRunning();
+    if (isBrowser && !running) {
+      this.statusEl.setText('🔒 Not manageable from Obsidian — run memorius serve in a terminal');
+      this.statusEl.className = 'memorius-status memorius-status-err';
+      return;
+    }
     this.statusEl.setText(running ? '🟢 Server running' : '🔴 Server stopped');
     this.statusEl.className = `memorius-status ${running ? 'memorius-status-ok' : 'memorius-status-err'}`;
   }
