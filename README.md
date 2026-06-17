@@ -18,7 +18,7 @@ Connect your Obsidian vault to [Memorius](https://github.com/Dream-Pixels-Forge/
 | 🧠 **Context Injection** | Fetch related memories from Memorius and inject them into your current note. |
 | 📊 **Dashboard** | Memory stats, shelf distribution, recent session diaries, quick actions. |
 | 🔗 **Semantic Graph** | Visualize how the current note relates to other memories by vector similarity. |
-| 🖥️ **MCP Console** | Start/stop the Memorius MCP server from Obsidian. |
+| 🖥️ **MCP Console** | Test REST connectivity and see MCP tool docs. MCP server is managed externally. |
 | 🔄 **Auto-Sync** | Automatically sync vault changes (create/modify/delete) to Memorius with debounce. |
 | ✅ **Fact-Check** | Check statements against your memory vault for contradictions. |
 | 📦 **Import/Export** | Import entire vault or single notes. Export Memorius context as Obsidian notes. |
@@ -101,16 +101,16 @@ When enabled, any note create/modify/delete event in Obsidian is automatically s
 
 ```bash
 # Install dependencies
-npm install
+pnpm install
 
 # Type-check
 npx tsc --noEmit
 
 # Build for production
-npm run build
+pnpm run build
 
 # Watch mode (auto-rebuild on changes)
-npm run dev
+pnpm run dev
 ```
 
 The build uses [esbuild](https://esbuild.github.io/) for fast bundling.
