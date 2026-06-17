@@ -17,3 +17,10 @@ Thumbs.db
 # Environment
 .env
 .env.local
+
+# Obsidian plugin state
+data.json
+
+# npm artifacts (this project uses npm, not pnpm workspaces)
+pnpm-lock.yaml
+pnpm-workspace.yaml

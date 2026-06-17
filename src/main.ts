@@ -120,7 +120,7 @@ function getFileFolderName(file: TFile): string {
 export default class MemoriusVaultPlugin extends Plugin {
   declare settings: MemoriusSettings;
   private statusBarItem: HTMLElement | null = null;
-  private syncTimers: Map<string, NodeJS.Timeout> = new Map();
+  private syncTimers: Map<string, number> = new Map();
   private mcpProcess: ChildProcessLike | null = null;
   private isImporting = false;
 
@@ -681,7 +681,7 @@ class ContextView extends ItemView {
 
 class DashboardView extends ItemView {
   plugin: MemoriusVaultPlugin;
-  private refreshTimer: ReturnType<typeof setInterval> | null = null;
+  private refreshTimer: number | null = null;
 
   constructor(leaf: WorkspaceLeaf, plugin: MemoriusVaultPlugin) { super(leaf); this.plugin = plugin; }
   getViewType(): string { return VIEW_TYPE_MEMORIUS_DASHBOARD; }
@@ -896,16 +896,18 @@ class McpView extends ItemView {
     c.createEl('div', { cls: 'memorius-header' }).createEl('h3', { text: '🖥️ MCP Server Console' });
 
     this.statusEl = c.createEl('div', { cls: 'memorius-status', text: '' });
-    this.updateServerStatus();
 
     const isBrowser = typeof window !== 'undefined' && (typeof process === 'undefined' || !process.versions?.node);
-
     if (isBrowser) {
+      this.statusEl.setText('🔒 MCP management unavailable in this Obsidian build');
+      this.statusEl.className = 'memorius-status';
       const unsupported = c.createEl('p', { cls: 'memorius-hint', text: 'MCP process management is unavailable in this Obsidian build.' });
       const detail = c.createEl('p', { cls: 'memorius-hint', text: 'Run the server manually from a terminal:' });
       detail.createEl('code', { text: 'memorius serve' });
       return;
     }
+
+    this.updateServerStatus();
 
     // Action buttons
     const actions = c.createEl('div', { cls: 'memorius-mcp-actions' });
@@ -965,18 +967,18 @@ class McpView extends ItemView {
 
   updateServerStatus() {
     const isBrowser = typeof window !== 'undefined' && (typeof process === 'undefined' || !process.versions?.node);
-    const running = this.plugin.isMcpRunning();
-    if (isBrowser && !running) {
-      this.statusEl.setText('🔒 Not manageable from Obsidian — run memorius serve in a terminal');
-      this.statusEl.className = 'memorius-status memorius-status-err';
+    if (isBrowser) {
+      this.statusEl.setText('🔒 MCP management unavailable — run memorius serve in a terminal');
+      this.statusEl.className = 'memorius-status';
       return;
     }
-    this.statusEl.setText(running ? '🟢 Server running' : '🔴 Server stopped');
+    const running = this.plugin.isMcpRunning();
+    this.statusEl.setText(running ? '🟢 Server running' : '🔴 Not running');
     this.statusEl.className = `memorius-status ${running ? 'memorius-status-ok' : 'memorius-status-err'}`;
   }
 
   onMcpStatusChange(running: boolean) {
-    this.statusEl.setText(running ? '🟢 Server running' : '🔴 Server stopped');
+    this.statusEl.setText(running ? '🟢 Server running' : '🔴 Not running');
     this.statusEl.className = `memorius-status ${running ? 'memorius-status-ok' : 'memorius-status-err'}`;
   }
 }
