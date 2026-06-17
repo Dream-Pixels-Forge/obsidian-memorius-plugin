@@ -575,7 +575,7 @@ class SearchView extends ItemView {
     row.createEl('button', { text: 'Search', cls: 'memorius-search-btn' }).addEventListener('click', () => this.doSearch());
     this.searchInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') this.doSearch(); });
 
-    this.statusEl = c.createEl('div', { cls: 'memorius-status', text: 'Ready' });
+    this.statusEl = c.createEl('div', { cls: 'memorius-status', text: 'Enter a query to search memories' });
     this.resultsContainer = c.createEl('div', { cls: 'memorius-results' });
     this.checkConnection();
   }
@@ -596,7 +596,7 @@ class SearchView extends ItemView {
       const results = await this.plugin.search(query);
       this.statusEl.setText(`Found ${results.count} results`);
       if (results.count === 0) {
-        this.resultsContainer.createEl('div', { cls: 'memorius-no-results', text: 'No matches found.' });
+        this.resultsContainer.createEl('div', { cls: 'memorius-no-results', text: 'No memories matched your query.' });
         return;
       }
       for (const mem of results.results) buildMemoryCard(this.resultsContainer, mem, this.app);
@@ -638,7 +638,7 @@ class ContextView extends ItemView {
       this.ctxContainer.createEl('p', { cls: 'memorius-hint', text: 'Open a note to see related context.' });
       return;
     }
-    this.ctxContainer.createEl('p', { cls: 'memorius-loading', text: 'Loading...' });
+    this.ctxContainer.createEl('p', { cls: 'memorius-loading', text: 'Loading related memories...' });
 
     try {
       const results = await this.plugin.search(file.basename);
@@ -822,7 +822,7 @@ class GraphView extends ItemView {
       return;
     }
 
-    this.graphContainer.createEl('p', { cls: 'memorius-loading', text: 'Building graph...' });
+    this.graphContainer.createEl('p', { cls: 'memorius-loading', text: 'Building semantic graph...' });
 
     try {
       const results = await this.plugin.search(file.basename, 15);
@@ -934,20 +934,13 @@ class McpView extends ItemView {
   }
 
   updateServerStatus() {
-    const isBrowser = typeof window !== 'undefined' && (typeof process === 'undefined' || !process.versions?.node);
-    if (isBrowser) {
-      this.statusEl.setText('🔒 MCP management unavailable — run memorius serve in a terminal');
-      this.statusEl.className = 'memorius-status';
-      return;
-    }
-    const running = this.plugin.isMcpRunning();
-    this.statusEl.setText(running ? '🟢 Server running' : '🔴 Not running');
-    this.statusEl.className = `memorius-status ${running ? 'memorius-status-ok' : 'memorius-status-err'}`;
+    this.statusEl.setText('🔒 Managed externally — run memorius serve in a terminal');
+    this.statusEl.className = 'memorius-status';
   }
 
-  onMcpStatusChange(running: boolean) {
-    this.statusEl.setText(running ? '🟢 Server running' : '🔴 Not running');
-    this.statusEl.className = `memorius-status ${running ? 'memorius-status-ok' : 'memorius-status-err'}`;
+  onMcpStatusChange(_running: boolean) {
+    this.statusEl.setText('🔒 Managed externally — run memorius serve in a terminal');
+    this.statusEl.className = 'memorius-status';
   }
 }
 
@@ -1031,7 +1024,7 @@ class MemoriusSettingTab extends PluginSettingTab {
     containerEl.createEl('h3', { text: '🔌 Connection' });
     new Setting(containerEl)
       .setName('Server URL')
-      .setDesc('REST API address')
+      .setDesc('Memorius REST API endpoint (default: http://127.0.0.1:8912)')
       .addText(t => t
         .setPlaceholder('http://127.0.0.1:8912')
         .setValue(this.plugin.settings.serverUrl)
@@ -1042,7 +1035,7 @@ class MemoriusSettingTab extends PluginSettingTab {
         }));
     new Setting(containerEl)
       .setName('Default vault')
-      .setDesc('Memorius vault name')
+      .setDesc('Vault name used for memory operations (default: main)')
       .addText(t => t
         .setPlaceholder('main')
         .setValue(this.plugin.settings.defaultVault)
@@ -1057,9 +1050,10 @@ class MemoriusSettingTab extends PluginSettingTab {
         .onChange(async v => { this.plugin.settings.maxSearchResults = v; await this.plugin.saveSettings(); }));
     new Setting(containerEl)
       .setName('Test Connection')
+      .setDesc('Verify the REST API is reachable')
       .addButton(b => b
         .setButtonText('Test')
-        .onClick(async () => { const ok = await this.plugin.checkHealth(); new Notice(ok ? '✅ Connected' : '❌ Cannot reach'); }));
+        .onClick(async () => { const ok = await this.plugin.checkHealth(); new Notice(ok ? '✅ Connected to Memorius' : '❌ Cannot reach — is memorius serve running?'); }));
   }
 
   private renderSyncSection(containerEl: HTMLElement) {
@@ -1091,10 +1085,10 @@ class MemoriusSettingTab extends PluginSettingTab {
   }
 
   private renderMcpSection(containerEl: HTMLElement) {
-    containerEl.createEl('h3', { text: '🖥️ MCP Server' });
-    containerEl.createEl('p', { cls: 'memorius-hint', text: 'MCP process control is unavailable inside Obsidian. Run the server from a terminal instead:' });
+    containerEl.createEl('h3', { text: '🖥️ MCP Server (External)' });
+    containerEl.createEl('p', { cls: 'memorius-hint', text: 'MCP process management is not available inside Obsidian. Run the server in a terminal:' });
     containerEl.createEl('code', { text: 'memorius serve' });
-    containerEl.createEl('p', { cls: 'memorius-hint', text: 'Use the MCP Console view to test REST connectivity, or manage the server externally.' });
+    containerEl.createEl('p', { cls: 'memorius-hint', text: 'Use the MCP Console view to test connectivity, or manage the server externally.' });
     new Setting(containerEl)
       .setName('MCP command')
       .setDesc('Used only when running outside the Obsidian sandbox')
