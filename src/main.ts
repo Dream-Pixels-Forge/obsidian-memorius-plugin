@@ -896,52 +896,21 @@ class McpView extends ItemView {
     c.createEl('div', { cls: 'memorius-header' }).createEl('h3', { text: '🖥️ MCP Server Console' });
 
     this.statusEl = c.createEl('div', { cls: 'memorius-status', text: '' });
+    this.statusEl.setText('🔒 Managed externally — run memorius serve in a terminal');
+    this.statusEl.className = 'memorius-status';
 
-    const isBrowser = typeof window !== 'undefined' && (typeof process === 'undefined' || !process.versions?.node);
-    if (isBrowser) {
-      this.statusEl.setText('🔒 MCP management unavailable in this Obsidian build');
-      this.statusEl.className = 'memorius-status';
-      const unsupported = c.createEl('p', { cls: 'memorius-hint', text: 'MCP process management is unavailable in this Obsidian build.' });
-      const detail = c.createEl('p', { cls: 'memorius-hint', text: 'Run the server manually from a terminal:' });
-      detail.createEl('code', { text: 'memorius serve' });
-      return;
-    }
+    c.createEl('p', { cls: 'memorius-hint', text: 'MCP is not controlled from this view.' });
+    const hint = c.createEl('p', { cls: 'memorius-hint', text: 'Start the server in a terminal:' });
+    hint.createEl('code', { text: 'memorius serve' });
+    c.createEl('p', { cls: 'memorius-hint', text: 'You can still use the test buttons below to verify REST connectivity.' });
 
-    this.updateServerStatus();
+    this.updateRestTests(c);
+  }
 
-    // Action buttons
-    const actions = c.createEl('div', { cls: 'memorius-mcp-actions' });
-
-    const startBtn = actions.createEl('button', { cls: 'memorius-action-btn', text: '▶️ Start Server' });
-    startBtn.addEventListener('click', () => this.plugin.startMcpServer().then(() => this.updateServerStatus()));
-
-    const stopBtn = actions.createEl('button', { cls: 'memorius-action-btn', text: '⏹️ Stop Server' });
-    stopBtn.addEventListener('click', () => { this.plugin.stopMcpServer(); this.updateServerStatus(); });
-
-    // Tool catalog
-    c.createEl('h4', { text: 'Available MCP Tools' });
-    const tools = c.createEl('div', { cls: 'memorius-mcp-tools' });
-
-    const toolDefs = [
-      { name: 'memorius_store',       desc: 'Store a memory in the vault' },
-      { name: 'memorius_search',      desc: 'Semantic search across vault' },
-      { name: 'memorius_status',      desc: 'Get vault status & stats' },
-      { name: 'memorius_diary_write', desc: 'Write a session diary entry' },
-      { name: 'memorius_context',     desc: 'Get context for injection' },
-      { name: 'memorius_consolidate', desc: 'Merge duplicate memories' },
-      { name: 'memorius_factcheck',   desc: 'Fact-check against vault' },
-    ];
-
-    for (const t of toolDefs) {
-      const item = tools.createEl('div', { cls: 'memorius-mcp-tool-item' });
-      item.createEl('code', { text: t.name });
-      item.createEl('span', { text: t.desc });
-    }
-
-    // Quick test button
-    c.createEl('h4', { text: 'Test Connection' });
+  private updateRestTests(c: HTMLElement) {
+    if (c.querySelector('.memorius-mcp-actions')) return;
+    const h4 = c.createEl('h4', { text: 'Test REST Connection' });
     const testActions = c.createEl('div', { cls: 'memorius-mcp-actions' });
-
     const testSearchBtn = testActions.createEl('button', { cls: 'memorius-action-btn', text: '🔍 Test Search' });
     testSearchBtn.addEventListener('click', async () => {
       try {
@@ -952,7 +921,6 @@ class McpView extends ItemView {
         new Notice(`Search failed: ${message}`);
       }
     });
-
     const testStoreBtn = testActions.createEl('button', { cls: 'memorius-action-btn', text: '📝 Test Store' });
     testStoreBtn.addEventListener('click', async () => {
       try {
